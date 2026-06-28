@@ -14,12 +14,12 @@ RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSIO
 
 WORKDIR /go/src/github.com/ollama/ollama
 
-# 有志のベースリポジトリをクローン（これで全ファイルがコンテナ内に入ります）
+# 有志のベースリポジトリをクローン
 RUN git clone https://github.com/dogkeeper886/ollama37.git .
 
-# 【超重要】リポジトリ内の「3.7 / sm_37」の記述をすべて「3.5 / sm_35」に一括置換
-RUN grep -rl "3.7" . | xargs sed -i 's/3.7/3.5/g' || true \
-    && grep -rl "37" . | xargs sed -i 's/37/35/g' || true
+# 【超重要】K40c (CC 3.5) 向けに、C/C++ソース(ml/)を完全に避けて、設定ファイルとGoソースのみ安全に置換
+RUN find . -path "./ml" -prune -o -type f \( -name "*.go" -o -name "*.json" -o -name "*.txt" -o -name "CMakeLists.txt" \) -print | \
+    xargs sed -i -e 's/3\.7/3.5/g' -e 's/\b37\b/35/g' -e 's/sm_37/sm_35/g' || true
 
 # === ステージ2: CPU用ランナーのビルド ===
 FROM base AS cpu
@@ -41,7 +41,6 @@ FROM base AS build
 RUN curl -fsSL https://golang.org/dl/go1.22.5.linux-amd64.tar.gz | tar xz -C /usr/local
 ENV PATH=/usr/local/go/bin:$PATH
 RUN go mod download
-# 不要なCOPYを削除し、内部クローンされたファイルをそのままビルド
 ENV CGO_ENABLED=1
 RUN go build -trimpath -buildmode=pie -o /bin/ollama .
 
