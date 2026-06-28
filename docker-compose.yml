@@ -10,6 +10,7 @@ services:
       - ollama_data:/root/.ollama
     environment:
       - OLLAMA_HOST=0.0.0.0:11434
+      - OLLAMA_GRAPH_SAFETY_MULTIPLIER=1.0
     deploy:
       resources:
         reservations:
