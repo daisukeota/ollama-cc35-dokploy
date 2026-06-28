@@ -29,8 +29,10 @@ RUN cmake --preset 'CPU' \
 
 # === ステージ3: CUDA 11用ランナーのビルド (K40cターゲット) ===
 FROM base AS cuda-11
-# 【修正】NVIDIA公式のRHEL8/AlmaLinux8向けリポジトリを追加してからインストールする
-RUN yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo \
+# 【強化】ダウンロード失敗を防ぐため、リトライ回数を20回、タイムアウトを300秒に延長する設定を追加
+RUN echo "retries=20" >> /etc/dnf/dnf.conf \
+    && echo "timeout=300" >> /etc/dnf/dnf.conf \
+    && yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo \
     && dnf install -y cuda-toolkit-11-8 \
     && dnf clean all
 ENV PATH=/usr/local/cuda-11.8/bin:$PATH
