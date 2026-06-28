@@ -29,7 +29,10 @@ RUN cmake --preset 'CPU' \
 
 # === ステージ3: CUDA 11用ランナーのビルド (K40cターゲット) ===
 FROM base AS cuda-11
-RUN dnf install -y cuda-toolkit-11-8 && dnf clean all
+# 【修正】NVIDIA公式のRHEL8/AlmaLinux8向けリポジトリを追加してからインストールする
+RUN yum-config-manager --add-repo https://developer.download.nvidia.com/compute/cuda/repos/rhel8/x86_64/cuda-rhel8.repo \
+    && dnf install -y cuda-toolkit-11-8 \
+    && dnf clean all
 ENV PATH=/usr/local/cuda-11.8/bin:$PATH
 RUN cmake --preset 'CUDA 11' -DOLLAMA_RUNNER_DIR="cuda_v11" \
     && cmake --build --parallel 4 --preset 'CUDA 11' \
