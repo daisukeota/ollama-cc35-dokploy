@@ -1,54 +1,71 @@
-# === ステージ1: ビルド環境 ===
-FROM nvidia/cuda:11.8.0-devel-ubuntu22.04 AS builder
+# === ステージ1: 基本ビルド環境 (AlmaLinux 8) ===
+FROM almalinux:8 AS base
 
-ENV DEBIAN_FRONTEND=noninteractive
+ARG CMAKEVERSION=3.31.2
+ENV PATH=/usr/local/bin:$PATH
 
-# 必要な依存ツールのインストール
-RUN apt-get update && apt-get install -y \
-    curl \
-    git \
-    build-essential \
-    cmake \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+# 必要なツールのインストール
+RUN dnf install -y yum-utils epel-release wget git make gcc-toolset-11-gcc gcc-toolset-11-gcc-c++ \
+    && dnf clean all
+ENV PATH=/opt/rh/gcc-toolset-11/root/usr/bin:$PATH
 
-# Go言語のインストール (Ollamaのビルドに必要)
-RUN curl -fsSL https://golang.org/dl/go1.22.5.linux-amd64.tar.gz | tar -xz -C /usr/local
-ENV PATH=$PATH:/usr/local/go/bin
+# CMake のインストール
+RUN curl -fsSL https://github.com/Kitware/CMake/releases/download/v${CMAKEVERSION}/cmake-${CMAKEVERSION}-linux-$(uname -m).tar.gz | tar xz -C /usr/local --strip-components 1
 
-WORKDIR /build
+WORKDIR /go/src/github.com/ollama/ollama
 
-# 有志のCC3.7対応リポジトリをクローン
-RUN git clone https://github.com/dogkeeper886/ollama37.git ollama
+# 有志のベースリポジトリをクローン
+RUN git clone https://github.com/dogkeeper886/ollama37.git .
 
-WORKDIR /build/ollama
+# 【超重要】リポジトリ内の「3.7 / sm_37」の記述をすべて「3.5 / sm_35」に一括置換
+# これにより、最新の検知ロジックとCMake設定をすべてK40c(CC3.5)用に書き換えます
+RUN grep -rl "3.7" . | xargs sed -i 's/3.7/3.5/g' || true \
+    && grep -rl "37" . | xargs sed -i 's/37/35/g' || true
 
-# 【重要】K40c (CC 3.5) 向けにソースコードを置換修正
-# 最低マイナーバージョン制限を 7 から 5 に書き換える
-RUN sed -i 's/CudaComputeMinorMin = "7"/CudaComputeMinorMin = "5"/g' gpu/gpu.go
+# 必要なソースファイルをビルドエリアにコピー
+COPY CMakeLists.txt CMakePresets.json ./
+COPY ml/backend/ggml/ggml ml/backend/ggml/ggml
 
-# ビルドターゲットを「sm_35 (CC 3.5)」のみに絞る
-ENV CMAKE_CUDA_ARCHITECTURES="35"
-ENV OLLAMA_CUSTOM_CUDA_ARCH="35"
+# === ステージ2: CPU用ランナーのビルド ===
+FROM base AS cpu
+RUN cmake --preset 'CPU' \
+    && cmake --build --parallel 4 --preset 'CPU' \
+    && cmake --install build --component CPU --strip --parallel 4
+
+# === ステージ3: CUDA 11用ランナーのビルド (K40cターゲット) ===
+FROM base AS cuda-11
+RUN dnf install -y cuda-toolkit-11-8 && dnf clean all
+ENV PATH=/usr/local/cuda-11.8/bin:$PATH
+RUN cmake --preset 'CUDA 11' -DOLLAMA_RUNNER_DIR="cuda_v11" \
+    && cmake --build --parallel 4 --preset 'CUDA 11' \
+    && cmake --install build --component CUDA --strip --parallel 4
+
+# === ステージ4: Goバイナリ(本体)のビルド ===
+FROM base AS build
+# Go言語のインストール
+RUN curl -fsSL https://golang.org/dl/go1.22.5.linux-amd64.tar.gz | tar xz -C /usr/local
+ENV PATH=/usr/local/go/bin:$PATH
+RUN go mod download
+COPY . .
 ENV CGO_ENABLED=1
+RUN go build -trimpath -buildmode=pie -o /bin/ollama .
 
-# 生成とコンパイルの実行
-RUN go generate ./...
-RUN go build -ldflags "-w -s -X=github.com/ollama/ollama/gpu.CudaMinVersion=3.5" -o /build/ollama_bin .
-
-# === ステージ2: 実行用軽量環境 ===
-FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
+# === ステージ5: 最終イメージの作成 (Ubuntu 24.04) ===
+FROM ubuntu:24.04
 
 RUN apt-get update && apt-get install -y ca-certificates && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# ビルドしたバイナリだけをコピー
-COPY --from=builder /build/ollama_bin /bin/ollama
+# 各ステージでビルドした成果物だけを集約
+COPY --from=build /bin/ollama /usr/bin/ollama
+COPY --from=cpu /go/src/github.com/ollama/ollama/dist/lib/ollama /usr/lib/ollama
+COPY --from=cuda-11 /go/src/github.com/ollama/ollama/dist/lib/ollama /usr/lib/ollama
 
-# 環境変数の設定
-ENV OLLAMA_HOST=0.0.0.0:11434
+ENV PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV LD_LIBRARY_PATH=/usr/local/nvidia/lib:/usr/local/nvidia/lib64
 ENV NVIDIA_DRIVER_CAPABILITIES=compute,utility
 ENV NVIDIA_VISIBLE_DEVICES=all
+ENV OLLAMA_HOST=0.0.0.0:11434
 
 EXPOSE 11434
-
-ENTRYPOINT ["/bin/ollama"]
+ENTRYPOINT ["/usr/bin/ollama"]
 CMD ["serve"]
